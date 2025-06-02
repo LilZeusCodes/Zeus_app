@@ -1,53 +1,37 @@
 import streamlit as st
-# LangChain imports for the Study Buddy section
-from langchain_google_genai import GoogleGenerativeAI as LangChainGoogleGenerativeAI # Alias for clarity
+# LangChain imports
+from langchain_google_genai import GoogleGenerativeAI as LangChainGoogleGenerativeAI
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_community.document_loaders import PyPDFLoader, TextLoader # Still useful for text-based PDFs
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-# from langchain.chains import RetrievalQA # Not directly used for chat in this version
 from langchain.prompts import PromptTemplate
 # Standard Python imports
 import os
 import tempfile
 import hashlib
 import time
-
-# --- OCR Specific Imports (using Gemini directly) ---
-import google.generativeai as genai # This is the primary SDK for Gemini
+# Gemini SDK
+import google.generativeai as genai
 
 # --- App Configuration & Title ---
-st.set_page_config(page_title="Gemini Study Buddy Pro (Features++)", layout="wide")
-st.title("📚 Gemini Study Buddy Pro (Features++)")
-
-# --- API Key Configuration ---
-try:
-    GEMINI_API_KEY = st.secrets.get("GOOGLE_API_KEY_GEMINI", os.getenv("GOOGLE_API_KEY_GEMINI"))
-except (FileNotFoundError, KeyError):
-    GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY_GEMINI")
-
-if not GEMINI_API_KEY:
-    st.error("🔴 Gemini API Key (GOOGLE_API_KEY_GEMINI) not found. Please set it. All features will be disabled.")
-    st.stop()
-
-genai.configure(api_key=GEMINI_API_KEY)
-
-# --- Initialize LLM and Embeddings ---
-llm_studybuddy = None # For summaries, flashcards
-llm_qna = None      # For chat Q&A
-embeddings_studybuddy = None
-try:
-    llm_studybuddy = LangChainGoogleGenerativeAI(model="gemini-2.5-flash-preview-04-17", temperature=0.5, google_api_key=GEMINI_API_KEY)
-    llm_qna = LangChainGoogleGenerativeAI(model="gemini-2.5-flash-preview-04-17", temperature=0.7, google_api_key=GEMINI_API_KEY) # Using your specified model
-    embeddings_studybuddy = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", task_type="retrieval_document", google_api_key=GEMINI_API_KEY)
-except Exception as e:
-    st.sidebar.error(f"Error initializing Gemini models: {e}")
+st.set_page_config(page_title="Gemini Study Buddy Pro (Interactive Key)", layout="wide")
+st.title("📚 Gemini Study Buddy Pro (Interactive Key)")
 
 # --- Session State Management ---
+# For API Key
+if 'gemini_api_key_provided' not in st.session_state:
+    st.session_state.gemini_api_key_provided = None # Will store the user-entered key
+if 'gemini_configured' not in st.session_state:
+    st.session_state.gemini_configured = False # Flag to check if genai has been configured
+
+# For OCR
 if 'ocr_text_output' not in st.session_state:
     st.session_state.ocr_text_output = None
 if 'ocr_file_name' not in st.session_state:
     st.session_state.ocr_file_name = None
+
+# For Study Buddy
 if 'vector_store' not in st.session_state:
     st.session_state.vector_store = None
 if 'processed_file_hash' not in st.session_state:
@@ -58,19 +42,65 @@ if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'current_doc_chat_hash' not in st.session_state:
     st.session_state.current_doc_chat_hash = None
-if 'last_used_sources' not in st.session_state: # For Q&A source highlighting
+if 'last_used_sources' not in st.session_state:
     st.session_state.last_used_sources = []
+
+# --- Global LLM and Embeddings Variables ---
+llm_studybuddy = None
+llm_qna = None
+embeddings_studybuddy = None
+
+# --- API Key Input and Configuration ---
+def configure_gemini_and_models(api_key):
+    global llm_studybuddy, llm_qna, embeddings_studybuddy
+    try:
+        genai.configure(api_key=api_key)
+        llm_studybuddy = LangChainGoogleGenerativeAI(model="gemini-2.5-flash-preview-04-17", temperature=0.5, google_api_key=api_key)
+        llm_qna = LangChainGoogleGenerativeAI(model="gemini-2.5-flash-preview-04-17", temperature=0.7, google_api_key=api_key)
+        embeddings_studybuddy = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", task_type="retrieval_document", google_api_key=api_key)
+        st.session_state.gemini_configured = True
+        st.sidebar.success("Gemini API Key accepted and models initialized!")
+        return True
+    except Exception as e:
+        st.sidebar.error(f"Failed to configure Gemini with API Key: {e}")
+        st.session_state.gemini_configured = False
+        st.session_state.gemini_api_key_provided = None # Clear invalid key
+        return False
+
+# Try to get API key from environment or secrets first
+env_api_key = st.secrets.get("GOOGLE_API_KEY_GEMINI", os.getenv("GOOGLE_API_KEY_GEMINI"))
+
+if env_api_key and not st.session_state.gemini_configured:
+    st.session_state.gemini_api_key_provided = env_api_key
+    configure_gemini_and_models(env_api_key)
+
+if not st.session_state.gemini_configured:
+    st.sidebar.subheader("🔑 Enter Gemini API Key")
+    user_api_key = st.sidebar.text_input("Your Google AI Studio API Key:", type="password", key="api_key_input")
+    if st.sidebar.button("Set API Key", key="set_api_key_button"):
+        if user_api_key:
+            st.session_state.gemini_api_key_provided = user_api_key
+            if configure_gemini_and_models(user_api_key):
+                st.rerun() # Rerun to update UI now that key is set
+            else:
+                st.sidebar.error("Invalid API Key or configuration failed. Please check your key and try again.")
+        else:
+            st.sidebar.warning("Please enter an API Key.")
+    st.sidebar.caption("Get your key from [Google AI Studio](https://aistudio.google.com/app/apikey). The key is stored for this session only.")
+    st.warning("Please provide your Gemini API Key in the sidebar to enable app features.")
+    st.stop() # Stop further execution until API key is configured
 
 
 # =============================================
 # SECTION 1: OCR PDF (Using Gemini Multimodal)
 # =============================================
-# ... (OCR section remains the same as your last provided version) ...
+# ... (OCR section remains the same, it will use the configured genai) ...
 st.sidebar.markdown("---")
 st.sidebar.header("📄 OCR Scanned PDF (with Gemini)")
-ocr_uploaded_file = st.sidebar.file_uploader("Upload a scanned PDF for Gemini OCR", type="pdf", key="gemini_ocr_uploader")
+ocr_uploaded_file = st.sidebar.file_uploader("Upload a scanned PDF for Gemini OCR", type="pdf", key="gemini_ocr_uploader", disabled=not st.session_state.gemini_configured)
 
 def perform_ocr_with_gemini(pdf_file_uploader_object):
+    # This function now assumes genai is configured
     try:
         st.sidebar.write("Uploading PDF to Gemini File API...")
         uploaded_gemini_file = genai.upload_file(
@@ -101,7 +131,7 @@ def perform_ocr_with_gemini(pdf_file_uploader_object):
             except: pass
         return None
 
-if ocr_uploaded_file is not None:
+if ocr_uploaded_file is not None and st.session_state.gemini_configured:
     if st.sidebar.button("✨ Perform Gemini OCR", key="gemini_ocr_button"):
         st.session_state.ocr_text_output = None 
         st.session_state.ocr_file_name = None
@@ -114,7 +144,7 @@ if ocr_uploaded_file is not None:
             else:
                 st.sidebar.error("Gemini OCR failed or no text was extracted.")
 
-if st.session_state.ocr_text_output:
+if st.session_state.ocr_text_output and st.session_state.gemini_configured:
     st.sidebar.subheader("Gemini OCR Result:")
     st.sidebar.download_button(
         label="📥 Download OCR'd Text",
@@ -136,10 +166,12 @@ study_uploaded_file = st.sidebar.file_uploader(
     "Upload TEXT-READABLE PDF or TXT for Q&A, Summary, etc.", 
     type=["pdf", "txt"], 
     key="study_uploader",
-    help="If your PDF is scanned, please use the 'OCR Scanned PDF' section above first and then upload the downloaded .txt file here."
+    help="If your PDF is scanned, please use the 'OCR Scanned PDF' section above first and then upload the downloaded .txt file here.",
+    disabled=not st.session_state.gemini_configured
 )
 
-if study_uploaded_file is not None and GEMINI_API_KEY and llm_studybuddy and embeddings_studybuddy:
+# File processing for Study Buddy (only if Gemini is configured)
+if study_uploaded_file is not None and st.session_state.gemini_configured and llm_studybuddy and embeddings_studybuddy:
     file_bytes = study_uploaded_file.getvalue()
     current_file_hash = hashlib.md5(file_bytes).hexdigest()
 
@@ -149,7 +181,7 @@ if study_uploaded_file is not None and GEMINI_API_KEY and llm_studybuddy and emb
         st.session_state.documents_for_direct_use = None
         st.session_state.chat_history = [] 
         st.session_state.current_doc_chat_hash = current_file_hash 
-        st.session_state.last_used_sources = [] # Clear sources for new doc
+        st.session_state.last_used_sources = []
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=f".{study_uploaded_file.name.split('.')[-1]}") as tmp_file:
                 tmp_file.write(file_bytes)
@@ -189,7 +221,7 @@ if study_uploaded_file is not None and GEMINI_API_KEY and llm_studybuddy and emb
 
 
 # --- Main Interaction Area for Study Buddy Tools ---
-if st.session_state.get('vector_store') and st.session_state.get('documents_for_direct_use') and GEMINI_API_KEY and llm_qna and llm_studybuddy:
+if st.session_state.gemini_configured and st.session_state.get('vector_store') and st.session_state.get('documents_for_direct_use') and llm_qna and llm_studybuddy:
     st.markdown("---")
     if st.session_state.current_doc_chat_hash != st.session_state.processed_file_hash:
         st.session_state.chat_history = []
@@ -210,21 +242,24 @@ if st.session_state.get('vector_store') and st.session_state.get('documents_for_
         key=f"query_type_{query_type_key_suffix}"
     )
 
+    # ... (Chat, Flashcard, Summary logic remains largely the same as your last version) ...
+    # ... Ensure they use llm_qna and llm_studybuddy which are now globally defined ...
+    # ... and initialized only after API key is confirmed ...
+
     if query_type == "Chat & Ask Questions":
         st.subheader("💬 Chat with your Document")
-        # Display chat history
         for item in st.session_state.chat_history:
             role = item.get("role")
             content = item.get("content")
-            sources = item.get("sources") # Get sources if available
+            sources = item.get("sources") 
             with st.chat_message(role):
                 st.markdown(content)
-                if role == "ai" and sources: # Display sources for AI messages
+                if role == "ai" and sources: 
                     with st.expander("📚 View Sources Used", expanded=False):
                         for i, source_doc in enumerate(sources):
                             page_label = source_doc.metadata.get('page', 'N/A')
                             st.caption(f"Source {i+1} (Page: {page_label}):")
-                            st.markdown(f"> {source_doc.page_content[:300]}...") # Show a snippet
+                            st.markdown(f"> {source_doc.page_content[:300]}...") 
                             st.markdown("---")
         
         user_question = st.chat_input("Ask a follow-up question or a new question...", key=f"chat_input_{query_type_key_suffix}")
@@ -236,14 +271,14 @@ if st.session_state.get('vector_store') and st.session_state.get('documents_for_
 
         if user_question:
             st.session_state.chat_history.append({"role": "user", "content": user_question, "sources": None})
-            with st.chat_message("user"): # Display current user question immediately
+            with st.chat_message("user"):
                 st.markdown(user_question)
 
             with st.spinner("Thinking..."):
                 history_for_prompt_list = [f"Previous {item['role']}: {item['content']}" for item in st.session_state.chat_history[:-1]]
                 history_for_prompt = "\n".join(history_for_prompt_list)
                 
-                retriever = st.session_state.vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 3}) # Retrieve top 3 chunks
+                retriever = st.session_state.vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 3})
                 
                 prompt_template_chat_qa = """You are an helpful expert in all fields of study and the best generalist on earth who understands everything well. Use the following pieces of context from a document AND the preceding chat history to answer the user's current question.
                 Provide a explanatory and elaborative answer based SOLELY on the provided context and chat history.
@@ -265,8 +300,8 @@ if st.session_state.get('vector_store') and st.session_state.get('documents_for_
                 )
                 
                 try:
-                    retrieved_docs = retriever.invoke(user_question) # Get source documents
-                    st.session_state.last_used_sources = retrieved_docs # Store for display
+                    retrieved_docs = retriever.invoke(user_question) 
+                    st.session_state.last_used_sources = retrieved_docs 
 
                     context_for_prompt = "\n\n".join([doc.page_content for doc in retrieved_docs])
                     
@@ -276,16 +311,15 @@ if st.session_state.get('vector_store') and st.session_state.get('documents_for_
                         question=user_question
                     )
                     
-                    ai_response_text = llm_qna.invoke(full_chat_prompt_str)
+                    ai_response_text = llm_qna.invoke(full_chat_prompt_str) # Use llm_qna
                     st.session_state.chat_history.append({"role": "ai", "content": ai_response_text, "sources": retrieved_docs})
-                    # Rerun to display the new AI message and its sources
                     st.rerun()
 
                 except Exception as e:
                     error_message = f"Error getting answer from Gemini: {e}"
                     st.error(error_message)
                     st.session_state.chat_history.append({"role": "ai", "content": f"Sorry, an error occurred: {e}", "sources": None})
-                    st.rerun() # Rerun to show the error message in chat
+                    st.rerun() 
 
     elif query_type == "Generate Flashcards (Term>>Definition)":
         if st.button("Generate Flashcards", key=f"flashcard_button_{query_type_key_suffix}"):
@@ -302,7 +336,7 @@ if st.session_state.get('vector_store') and st.session_state.get('documents_for_
                 Flashcards:
                 """
                 try:
-                    response_text = llm_studybuddy.invoke(prompt_template_flashcards)
+                    response_text = llm_studybuddy.invoke(prompt_template_flashcards) # Use llm_studybuddy
                     st.subheader("Flashcards:")
                     st.text_area("Copy these flashcards:", response_text, height=400, key=f"flashcard_output_{query_type_key_suffix}")
                 except Exception as e:
@@ -335,7 +369,7 @@ if st.session_state.get('vector_store') and st.session_state.get('documents_for_
                     {summary_length} Summary (Formatted in Markdown):
                     """
                     try:
-                        response_text_summary = llm_studybuddy.invoke(prompt_template_summary)
+                        response_text_summary = llm_studybuddy.invoke(prompt_template_summary) # Use llm_studybuddy
                         st.session_state[summary_session_key] = response_text_summary
                     except Exception as e:
                         st.error(f"Error generating summary: {e}")
@@ -349,33 +383,23 @@ if st.session_state.get('vector_store') and st.session_state.get('documents_for_
             current_summary_text = st.session_state[summary_session_key]
             st.markdown(current_summary_text)
             
-            # --- NEW: Export Summary Button ---
             if current_summary_text and "Error generating summary" not in current_summary_text and "No document loaded" not in current_summary_text:
                 st.markdown("---")
                 summary_file_name = f"summary_{header_file_name.replace(' ', '_').split('.')[0]}_{summary_length.lower()}.md"
                 st.download_button(
                     label="📥 Download Summary (Markdown)",
-                    data=current_summary_text.encode('utf-8'), # Encode to bytes
+                    data=current_summary_text.encode('utf-8'),
                     file_name=summary_file_name,
                     mime="text/markdown",
                     key=f"download_summary_{query_type_key_suffix}"
                 )
-            # --- End Export Summary Button ---
 
-            # Optional: Text area for manual copy if preferred by user
-            # st.markdown("---")
-            # st.text_area(
-            #     label="Raw Markdown Summary (for copying):",
-            #     value=current_summary_text if current_summary_text and "Error" not in current_summary_text and "No document" not in current_summary_text else "Summary not generated or error occurred.",
-            #     height=200,
-            #     key=f"summary_raw_text_area_{query_type_key_suffix}"
-            # )
-
-
-elif not GEMINI_API_KEY:
-    st.warning("Gemini features are disabled as the Gemini API Key is not provided.")
-else:
+elif not st.session_state.gemini_configured: # If Gemini was never configured (e.g. initial state before key entry)
+    # The API key input section will be shown by the logic at the top
+    pass
+elif st.session_state.gemini_configured and not (st.session_state.get('vector_store') and st.session_state.get('documents_for_direct_use')):
     st.info("👋 Upload a text-readable document in the sidebar to use the Study Buddy tools. For scanned PDFs, use the OCR section first.")
+
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Powered by Streamlit, LangChain & Google Gemini")
