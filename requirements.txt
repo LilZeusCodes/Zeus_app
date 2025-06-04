@@ -91,6 +91,7 @@ overrides==7.7.0
 packaging==23.2
 pandas==2.2.3
 pillow==11.2.1
+pip-25.1.1
 posthog==4.2.0
 propcache==0.3.1
 proto-plus==1.26.1
@@ -133,7 +134,6 @@ SQLAlchemy==2.0.41
 starlette==0.45.3
 streamlit==1.45.1
 streamlit-copy-to-clipboard==0.0.1
-streamlit-custom-component==0.2
 sympy==1.14.0
 tenacity==8.5.0
 threadpoolctl==3.6.0
